@@ -89,3 +89,14 @@ class ErrorDetail(BaseModel):
 class ErrorResponse(BaseModel):
     """Schema cho response lỗi chi tiết."""
     detail: Union[str, List[ErrorDetail]] = Field(..., description="Chi tiết lỗi")
+
+# --- Schema cho Training Status ---
+class TrainingStatusResponse(BaseModel):
+    """Schema cho response kiểm tra tình trạng training đơn giản."""
+    client_id: str = Field(..., example="client_abc")
+    status: str = Field(..., example="COMPLETED", description="COMPLETED, FAILED, TRAINING, NOT_FOUND")
+    training_type: Optional[str] = Field(None, example="initial", description="initial hoặc incremental")
+    selected_model_type: Optional[str] = Field(None, example="RandomForestClassifier")
+    training_timestamp: Optional[str] = Field(None, example="2025-01-15T10:30:00+00:00")
+    duration_seconds: Optional[float] = Field(None, example=125.5)
+    error_message: Optional[str] = Field(None, description="Thông báo lỗi nếu training failed")

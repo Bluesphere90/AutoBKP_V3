@@ -181,3 +181,57 @@ async def train_incremental_model(
         client_id=client_id,
         status_code=202
     )
+
+@router.get(
+    "/status/{client_id}",
+    response_model=schemas.TrainingStatusResponse,
+    summary="Kiểm tra tình trạng training của client",
+    description="Đọc file metadata mới nhất để xác định tình trạng training hiện tại.",
+    tags=["Training"],
+    responses={
+        200: {"description": "Thông tin tình trạng training"},
+        404: {"model": schemas.ErrorResponse, "description": "Không tìm thấy thông tin training cho client"}
+    }
+)
+async def get_training_status(
+    client_id: str = FastApiPath(..., description="ID của khách hàng", example="client_abc")
+) -> schemas.TrainingStatusResponse:
+    """Endpoint kiểm tra tình trạng training đơn giản."""
+    
+    client_models_path = get_client_models_path(client_id)
+    
+    # Tìm file metadata mới nhất
+    metadata_files = sorted(
+        client_models_path.glob(f"{config.METADATA_FILENAME_PREFIX}*.json"),
+        key=os.path.getmtime,
+        reverse=True
+    )
+    
+    if not metadata_files:
+        raise HTTPException(
+            status_code=404, 
+            detail=f"Không tìm thấy thông tin training cho client '{client_id}'"
+        )
+    
+    latest_metadata_file = metadata_files[0]
+    
+    try:
+        with open(latest_metadata_file, 'r', encoding='utf-8') as f:
+            metadata = json.load(f)
+        
+        return schemas.TrainingStatusResponse(
+            client_id=client_id,
+            status=metadata.get("status", "UNKNOWN"),
+            training_type=metadata.get("training_type"),
+            selected_model_type=metadata.get("selected_model_type"),
+            training_timestamp=metadata.get("training_timestamp_utc"),
+            duration_seconds=metadata.get("training_duration_seconds"),
+            error_message=metadata.get("error_message")
+        )
+        
+    except Exception as e:
+        logger.error(f"Lỗi khi đọc metadata file {latest_metadata_file}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Lỗi khi đọc thông tin training: {e}"
+        )

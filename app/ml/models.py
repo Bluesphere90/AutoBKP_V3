@@ -415,7 +415,7 @@ def train_client_models(client_id: str, initial_model_type_str: Optional[str] = 
         logger.info(f"Lọc dữ liệu cho model MaHangHoa từ {len(df)} bản ghi...")
         # Lọc theo prefix HachToan
         df_filtered_prefix = df[
-            df[config.TARGET_HACHTOAN].astype(str).str.startswith(config.HACHTOAN_PREFIX_FOR_MAHANGHOA)
+            df[config.TARGET_HACHTOAN].astype(str).str.startswith(tuple(config.HACHTOAN_PREFIX_FOR_MAHANGHOA))
         ].copy()
 
         if not df_filtered_prefix.empty:
@@ -656,7 +656,7 @@ def predict_combined(client_id: str, input_data: pd.DataFrame) -> List[Dict[str,
 
         if (hachtoan_pred is not None and
             isinstance(hachtoan_pred, str) and
-            hachtoan_pred.startswith(config.HACHTOAN_PREFIX_FOR_MAHANGHOA) and
+            hachtoan_pred.startswith(tuple(config.HACHTOAN_PREFIX_FOR_MAHANGHOA)) and
             preprocessor_mh and encoder_mh): # Cần prep và enc MH để xử lý MH
 
             indices_to_predict_mh.append(i)

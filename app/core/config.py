@@ -38,7 +38,7 @@ TARGET_HACHTOAN = "HachToan"
 TARGET_MAHANGHOA = "MaHangHoa"
 
 # --- Model Logic ---
-HACHTOAN_PREFIX_FOR_MAHANGHOA = "15"
+HACHTOAN_PREFIX_FOR_MAHANGHOA = ["15", "51"]
 
 # --- Model Selection & Parameters ---
 # Sử dụng Enum để định nghĩa các loại model hỗ trợ
