@@ -1,0 +1,10 @@
+Docker Volume Backup Summary
+============================
+Timestamp: 20250626_164905
+Date: Thu Jun 26 16:49:07 SEAST 2025
+Project: autobkp_v3
+Data Volume: autobkp_v3_app_data
+Models Volume: autobkp_v3_app_models
+
+⚠️  Data backup: Empty volume (marked)
+⚠️  Models backup: Empty volume (marked)

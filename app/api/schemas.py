@@ -6,7 +6,7 @@ from typing import List, Dict, Any, Optional, Union
 # --- Schemas Input gốc ---
 class PredictionInputItem(BaseModel):
     """Schema cho một dòng dữ liệu input cơ bản."""
-    MSTNguoiBan: str = Field(..., example="MST001", description="Mã số thuế người bán")
+    TaxCode: str = Field(..., example="MST001", description="Mã số thuế người bán")
     TenHangHoaDichVu: str = Field(..., example="Phí vận chuyển tháng 12", description="Tên hàng hóa/dịch vụ")
     additional_data: Dict[str, Any] = Field({}, description="Dữ liệu bổ sung (key-value pairs)")
 
@@ -100,3 +100,24 @@ class TrainingStatusResponse(BaseModel):
     training_timestamp: Optional[str] = Field(None, example="2025-01-15T10:30:00+00:00")
     duration_seconds: Optional[float] = Field(None, example=125.5)
     error_message: Optional[str] = Field(None, description="Thông báo lỗi nếu training failed")
+
+class ModelInfo(BaseModel):
+    """Schema cho thông tin model trong danh sách."""
+    client_id: str = Field(..., example="company_abc_v1", description="ID của khách hàng")
+    model_type: str = Field(..., example="RandomForestClassifier", description="Loại model được sử dụng")
+    training_type: str = Field(..., example="initial", description="Loại training: initial hoặc incremental")
+    status: str = Field(..., example="COMPLETED", description="Trạng thái training: COMPLETED, FAILED, TRAINING")
+    created_at: Optional[str] = Field(None, example="2025-01-15T10:30:00Z", description="Thời điểm tạo model")
+    last_trained: Optional[str] = Field(None, example="2025-01-20T14:20:00Z", description="Thời điểm training gần nhất")
+    hachtoan_available: bool = Field(..., example=True, description="Model HachToan có sẵn hay không")
+    mahanghoa_available: bool = Field(..., example=True, description="Model MaHangHoa có sẵn hay không")
+    sample_count: int = Field(..., example=5000, description="Số lượng samples được training")
+
+class ModelsListResponse(BaseModel):
+    """Schema cho response danh sách models."""
+    models: List[ModelInfo] = Field(..., description="Danh sách tất cả models của các clients")
+
+class ModelMetadataResponse(BaseModel):
+    """Schema cho response metadata chi tiết."""
+    client_id: str = Field(..., example="client_abc", description="ID của khách hàng")
+    metadata: Dict[str, Any] = Field(..., description="Metadata đầy đủ của model (đã filter sensitive info)")

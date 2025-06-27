@@ -13,6 +13,9 @@ from app.ml.models import train_client_models
 from app.ml.utils import get_client_data_path, get_client_models_path
 import app.core.config as config
 
+import json
+import os
+
 # --- Setup Logger and Router ---
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

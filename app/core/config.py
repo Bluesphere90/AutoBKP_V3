@@ -33,7 +33,7 @@ OUTLIER_DETECTOR_2_FILENAME = "outlier_detector_2.joblib"
 LABEL_ENCODERS_DIR = "label_encoders"
 
 # --- Column Names ---
-INPUT_COLUMNS = ["MSTNguoiBan", "TenHangHoaDichVu"]
+INPUT_COLUMNS = ["TaxCode", "TenHangHoaDichVu"]
 TARGET_HACHTOAN = "HachToan"
 TARGET_MAHANGHOA = "MaHangHoa"
 
