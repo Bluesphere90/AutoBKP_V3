@@ -90,12 +90,19 @@ async def train_initial_model(
     logger.info(f"Client {client_id}: Yêu cầu huấn luyện ban đầu với model_type='{model_type_str}'")
 
     client_data_path = get_client_data_path(client_id)
-    destination = client_data_path / config.TRAINING_DATA_FILENAME
     client_model_path = get_client_models_path(client_id)
 
-    if any(client_model_path.iterdir()):
-         logger.warning(f"Client {client_id}: Đã tồn tại mô hình/dữ liệu. File {config.TRAINING_DATA_FILENAME} sẽ bị ghi đè và huấn luyện lại từ đầu với model '{model_type_str}'.")
-         # Cân nhắc xóa file cũ
+    initial_data_file = client_data_path / config.TRAINING_DATA_FILENAME
+    metadata_files = list(client_model_path.glob(f"{config.METADATA_FILENAME_PREFIX}*.json"))
+
+    if initial_data_file.exists() or metadata_files:
+        logger.warning(f"Client {client_id}: Model already exists. Rejecting initial training request.")
+        raise HTTPException(
+            status_code=409,  # 409 Conflict
+            detail=f"Model for client '{client_id}' already exists. Use incremental training or choose a different client_id."
+        )
+
+    destination = client_data_path / config.TRAINING_DATA_FILENAME
 
     try:
         _save_uploaded_file(file, destination)

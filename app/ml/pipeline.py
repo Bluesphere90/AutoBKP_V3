@@ -80,7 +80,7 @@ def create_preprocessor(input_features: List[str], include_hachtoan_input: bool 
 
     # Xác định các cột cho từng loại xử lý
     text_features = ['TenHangHoaDichVu']
-    categorical_features = ['MSTNguoiBan']
+    categorical_features = ['TaxCode']
     if include_hachtoan_input and TARGET_HACHTOAN in input_features:
         categorical_features.append(TARGET_HACHTOAN)
 
