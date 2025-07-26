@@ -46,6 +46,18 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # --- Helper Functions (make_json_serializable, _fit/load_label_encoder - Giữ nguyên) ---
+def _find_latest_metadata_for_model(models_path: Path, model_name: str) -> Optional[Path]:
+    """Tìm file metadata mới nhất cho một model_name cụ thể."""
+    metadata_pattern = f"{config.METADATA_FILENAME_PREFIX}{model_name}_*.json"
+    metadata_files = sorted(
+        models_path.glob(metadata_pattern),
+        key=os.path.getmtime,
+        reverse=True
+    )
+    if metadata_files:
+        return metadata_files[0]
+    return None
+
 def make_json_serializable(obj):
     # ... (code giữ nguyên) ...
     if isinstance(obj, np.integer): return int(obj)
@@ -287,214 +299,200 @@ def _instantiate_model(model_type_str: str) -> Optional[Any]:
 
 
 # --- Main Training Orchestrator (Cập nhật) ---
-def train_client_models(client_id: str, initial_model_type_str: Optional[str] = None) -> bool:
+def train_client_models(
+        client_id: str,
+        model_name: str,  # NEW PARAMETER
+        initial_model_type_str: Optional[str] = None
+) -> bool:
+    """
+    Enhanced train_client_models với model_name support.
+
+    Args:
+        client_id: ID của client
+        model_name: "IN" hoặc "OUT"
+        initial_model_type_str: Loại model (chỉ cần cho lần đầu)
+    """
+    # Validate model_name
+    if model_name not in config.VALID_MODEL_NAMES:
+        logger.error(f"Invalid model_name: {model_name}. Must be one of {config.VALID_MODEL_NAMES}")
+        return False
+
     start_time = time.time()
     training_timestamp_utc = datetime.now(timezone.utc)
-    logger.info(f"===== Bắt đầu quy trình huấn luyện cho client: {client_id} lúc {training_timestamp_utc} UTC =====")
+    logger.info(f"===== Training model '{model_name}' for client: {client_id} at {training_timestamp_utc} UTC =====")
+
     models_path = get_client_models_path(client_id)
-    metadata = { # Khởi tạo metadata
-        "client_id": client_id, "training_timestamp_utc": training_timestamp_utc.isoformat(),
-        "status": "STARTED", "training_type": None, "selected_model_type": None,
-        "data_info": {}, "hachtoan_model_info": {}, "mahanghoa_model_info": {},
-        "training_duration_seconds": None, "error_message": None
+
+    # Initialize metadata với model_name
+    metadata = {
+        "client_id": client_id,
+        "model_name": model_name,  # NEW FIELD
+        "training_timestamp_utc": training_timestamp_utc.isoformat(),
+        "status": "STARTED",
+        "selected_model_type": None,
+        "data_info": {},
+        "hachtoan_model_info": {},
+        "mahanghoa_model_info": {},
+        "training_duration_seconds": None,
+        "error_message": None
     }
 
-    # --- Xác định Training Type và Model Type ---
-    latest_metadata_file = _find_latest_metadata_file(models_path)
+    # --- Determine model type ---
     model_type_to_train = None
+
     if initial_model_type_str:
-        metadata["training_type"] = "initial"
+        # New training
         if initial_model_type_str in [e.value for e in config.SupportedModels]:
             model_type_to_train = initial_model_type_str
             metadata["selected_model_type"] = model_type_to_train
-            logger.info(f"Huấn luyện ban đầu, sử dụng model: {model_type_to_train}")
+            logger.info(f"New training for model '{model_name}' with type: {model_type_to_train}")
         else:
-            error_msg = f"Loại model '{initial_model_type_str}' không hợp lệ.";
+            error_msg = f"Invalid model type: {initial_model_type_str}"
             logger.error(error_msg)
-            metadata["status"] = "FAILED";
-            metadata["error_message"] = error_msg;  # Lưu lỗi và thoát sớm
-            # ... (lưu metadata lỗi) ...
+            metadata["status"] = "FAILED"
+            metadata["error_message"] = error_msg
             return False
-    elif latest_metadata_file:
-        metadata["training_type"] = "incremental"
-        saved_model_type = _load_model_type_from_metadata(latest_metadata_file)
-        if saved_model_type:
-            model_type_to_train = saved_model_type
-        else:
-            model_type_to_train = config.DEFAULT_MODEL_TYPE.value; logger.warning(
-                "Không đọc được model type, dùng default.")
-        metadata["selected_model_type"] = model_type_to_train
-        logger.info(f"Huấn luyện tăng cường, sử dụng model: {model_type_to_train}")
     else:
-        error_msg = "Không thể xác định loại model.";
-        logger.error(error_msg)
-        metadata["status"] = "FAILED";
-        metadata["error_message"] = error_msg;  # Lưu lỗi và thoát sớm
-        # ... (lưu metadata lỗi) ...
-        return False
+        # Retrain - find existing model type
+        existing_metadata = _find_latest_metadata_for_model(models_path, model_name)
+        if existing_metadata:
+            saved_model_type = _load_model_type_from_metadata(existing_metadata)
+            model_type_to_train = saved_model_type or config.DEFAULT_MODEL_TYPE.value
+            metadata["selected_model_type"] = model_type_to_train
+            logger.info(f"Retraining model '{model_name}' with existing type: {model_type_to_train}")
+        else:
+            # No existing model - use default
+            model_type_to_train = config.DEFAULT_MODEL_TYPE.value
+            metadata["selected_model_type"] = model_type_to_train
+            logger.info(f"No existing model '{model_name}' found, using default type: {model_type_to_train}")
 
-    # --- Xác định data files (Giữ nguyên logic) ---
-    client_data_path = config.BASE_DATA_PATH / client_id
-    initial_data_file = client_data_path / config.TRAINING_DATA_FILENAME
-    incremental_files = sorted(client_data_path.glob(f"{config.INCREMENTAL_DATA_PREFIX}*.csv"))
-    data_files_used = []
-    if initial_data_file.exists(): data_files_used.append(initial_data_file.name)
-    if incremental_files: data_files_used.extend([f.name for f in incremental_files])
-    if not data_files_used: metadata["training_type"] = "unknown"
-    metadata["data_info"]["files_used"] = data_files_used
+    # --- Load data from database ---
+    from app.ml.database import load_all_training_data
 
-
-    # 1. Load tất cả dữ liệu (Giữ nguyên)
-    df = load_all_client_data(client_id)
+    df = load_all_training_data(client_id)
     if df is None or df.empty:
-        error_msg = f"Không có dữ liệu huấn luyện hợp lệ.";
+        error_msg = f"No training data found in database for client {client_id}"
         logger.error(error_msg)
-        metadata["status"] = "FAILED";
-        metadata["error_message"] = error_msg;  # Lưu lỗi và thoát sớm
-        # ... (lưu metadata lỗi) ...
+        metadata["status"] = "FAILED"
+        metadata["error_message"] = error_msg
         return False
 
     metadata["data_info"]["total_samples_loaded"] = len(df)
     metadata["data_info"]["columns_present"] = df.columns.tolist()
+    logger.info(f"Loaded {len(df)} records from database for client {client_id}")
 
-    # --- Khởi tạo các đối tượng model dựa trên model_type_to_train ---
+    # --- Create model instances ---
     model_ht_instance = _instantiate_model(model_type_to_train)
-    model_mh_instance = _instantiate_model(model_type_to_train) # Dùng cùng loại model cho cả hai
+    model_mh_instance = _instantiate_model(model_type_to_train)
 
-    if model_ht_instance is None: # Nếu không khởi tạo được model HachToan
-        error_msg = f"Không thể khởi tạo model loại '{model_type_to_train}' cho HachToan."
-        logger.error(error_msg); metadata["status"] = "FAILED"; metadata["error_message"] = error_msg
-        # ... (Lưu metadata lỗi và return False) ...
+    if model_ht_instance is None:
+        error_msg = f"Cannot instantiate model type: {model_type_to_train}"
+        logger.error(error_msg)
+        metadata["status"] = "FAILED"
+        metadata["error_message"] = error_msg
         return False
 
-    # Đặt tên file (Giữ nguyên)
-    preprocessor_hachtoan_file = config.PREPROCESSOR_HACHTOAN_FILENAME
-    hachtoan_model_save_file = config.HACHTOAN_MODEL_FILENAME # Tên file lưu cố định
-    mahanghoa_model_save_file = config.MAHANGHOA_MODEL_FILENAME # Tên file lưu cố định
-    hachtoan_encoder_file = config.HACHTOAN_ENCODER_FILENAME  # Cần tên này
-    mahanghoa_encoder_file = config.MAHANGHOA_ENCODER_FILENAME  # Cần tên này
-    outlier_detector_1_file = config.OUTLIER_DETECTOR_1_FILENAME  # Cần tên này
-    outlier_detector_2_file = config.OUTLIER_DETECTOR_2_FILENAME  # Cần tên này
-    preprocessor_mahanghoa_file = config.PREPROCESSOR_MAHANGHOA_FILENAME  # Cần tên này
+    # --- Generate filenames with model_name ---
+    preprocessor_hachtoan_file = config.get_preprocessor_hachtoan_filename(model_name)
+    hachtoan_model_save_file = config.get_hachtoan_model_filename(model_name)
+    mahanghoa_model_save_file = config.get_mahanghoa_model_filename(model_name)
+    hachtoan_encoder_file = config.get_hachtoan_encoder_filename(model_name)
+    mahanghoa_encoder_file = config.get_mahanghoa_encoder_filename(model_name)
+    outlier_detector_1_file = config.get_outlier_detector_1_filename(model_name)
+    outlier_detector_2_file = config.get_outlier_detector_2_filename(model_name)
+    preprocessor_mahanghoa_file = config.get_preprocessor_mahanghoa_filename(model_name)
 
-
-    # 2. Huấn luyện mô hình HachToan (Truyền model_ht_instance)
-    logger.info(f"--- Huấn luyện mô hình {model_type_to_train} cho HachToan ---")
+    # --- Train HachToan model ---
+    logger.info(f"--- Training {model_type_to_train} for HachToan (model: {model_name}) ---")
     prep_ht, model_ht, enc_ht, metrics_ht = train_single_model(
-        client_id=client_id, df=df, target_column=config.TARGET_HACHTOAN,
+        client_id=client_id,
+        df=df,
+        target_column=config.TARGET_HACHTOAN,
         preprocessor_creator=create_hachtoan_preprocessor,
         preprocessor_filename=preprocessor_hachtoan_file,
-        model_object=model_ht_instance, # Truyền model đã khởi tạo
-        model_save_filename=hachtoan_model_save_file, # Tên file để lưu
+        model_object=model_ht_instance,
+        model_save_filename=hachtoan_model_save_file,
         encoder_filename=hachtoan_encoder_file,
         outlier_detector_filename=outlier_detector_1_file
     )
 
-    # Lưu metadata HachToan (Giữ nguyên logic)
+    # Save HachToan metadata
     metadata["hachtoan_model_info"]["preprocessor_saved"] = prep_ht is not None
-    # ... (lưu các thông tin khác như trước) ...
-    if model_ht: metadata["hachtoan_model_info"]["model_class"] = type(model_ht).__name__
-    if model_ht: metadata["hachtoan_model_info"]["model_params"] = model_ht.get_params()
+    metadata["hachtoan_model_info"]["model_saved"] = model_ht is not None
+    metadata["hachtoan_model_info"]["encoder_saved"] = enc_ht is not None
+    if model_ht:
+        metadata["hachtoan_model_info"]["model_class"] = type(model_ht).__name__
+        metadata["hachtoan_model_info"]["model_params"] = model_ht.get_params()
     metadata["hachtoan_model_info"]["evaluation_metrics"] = metrics_ht
 
     if prep_ht is None or enc_ht is None:
-        error_msg = "Huấn luyện HT thất bại (prep/enc).";
+        error_msg = "HachToan training failed (preprocessor/encoder)"
         logger.error(error_msg)
-        metadata["status"] = "FAILED";
-        metadata["error_message"] = error_msg;  # Lưu lỗi và thoát sớm
-        # ... (lưu metadata lỗi) ...
+        metadata["status"] = "FAILED"
+        metadata["error_message"] = error_msg
         return False
 
-    # 3. Huấn luyện mô hình MaHangHoa (Truyền model_mh_instance)
-    logger.info(f"--- Huấn luyện mô hình {model_type_to_train} cho MaHangHoa ---")
+    # --- Train MaHangHoa model (similar logic as before) ---
+    logger.info(f"--- Training {model_type_to_train} for MaHangHoa (model: {model_name}) ---")
     metadata["mahanghoa_model_info"]["attempted"] = False
-    df_mahanghoa = pd.DataFrame()  # Khởi tạo df rỗng
 
-    # Chỉ thử lọc nếu cột MaHangHoa tồn tại trong df gốc
+    # Filter data for MaHangHoa
     if config.TARGET_MAHANGHOA in df.columns:
-        logger.info(f"Lọc dữ liệu cho model MaHangHoa từ {len(df)} bản ghi...")
-        # Lọc theo prefix HachToan
         df_filtered_prefix = df[
             df[config.TARGET_HACHTOAN].astype(str).str.startswith(tuple(config.HACHTOAN_PREFIX_FOR_MAHANGHOA))
         ].copy()
 
         if not df_filtered_prefix.empty:
-            logger.info(
-                f"Tìm thấy {len(df_filtered_prefix)} bản ghi có HachToan prefix '{config.HACHTOAN_PREFIX_FOR_MAHANGHOA}'.")
-            # --- THỰC HIỆN dropna TRÊN MaHangHoa Ở ĐÂY ---
-            original_len_mh = len(df_filtered_prefix)
             df_mahanghoa = df_filtered_prefix.dropna(subset=[config.TARGET_MAHANGHOA]).copy()
-            # Cũng loại bỏ chuỗi rỗng '' nếu có trong MaHangHoa
-            if not df_mahanghoa.empty:
-                df_mahanghoa = df_mahanghoa[df_mahanghoa[config.TARGET_MAHANGHOA].astype(str) != '']
-
-            dropped_count_mh = original_len_mh - len(df_mahanghoa)
-            if dropped_count_mh > 0:
-                logger.warning(
-                    f"Đã loại bỏ {dropped_count_mh} hàng khi lọc cho MaHangHoa do thiếu giá trị target MaHangHoa.")
-            # ------------------------------------------
+            df_mahanghoa = df_mahanghoa[df_mahanghoa[config.TARGET_MAHANGHOA].astype(str) != '']
         else:
-            logger.info(f"Không tìm thấy bản ghi nào có HachToan prefix '{config.HACHTOAN_PREFIX_FOR_MAHANGHOA}'.")
-
+            df_mahanghoa = pd.DataFrame()
     else:
-        logger.warning(
-            f"Cột '{config.TARGET_MAHANGHOA}' không tồn tại trong dữ liệu. Không thể lọc dữ liệu cho MaHangHoa.")
+        df_mahanghoa = pd.DataFrame()
 
-    metadata["data_info"]["samples_for_mahanghoa"] = len(df_mahanghoa)  # Ghi lại số mẫu sau khi lọc và dropna
+    metadata["data_info"]["samples_for_mahanghoa"] = len(df_mahanghoa)
 
     if not df_mahanghoa.empty:
         metadata["mahanghoa_model_info"]["attempted"] = True
-        logger.info(f"Bắt đầu huấn luyện MaHangHoa với {len(df_mahanghoa)} bản ghi.")
-        if config.TARGET_HACHTOAN not in df_mahanghoa.columns:
-            logger.error(f"Dữ liệu lọc MaHangHoa thiếu cột {config.TARGET_HACHTOAN}.")
-            metadata["mahanghoa_model_info"]["error"] = "Missing HachToan column."
-        elif model_mh_instance is None:
-            logger.error(f"Không thể khởi tạo model '{model_type_to_train}' cho MaHangHoa.")
-            metadata["mahanghoa_model_info"]["error"] = f"Could not instantiate model."
-        else:
-            prep_mh, model_mh, enc_mh, metrics_mh = train_single_model(
-                client_id=client_id, df=df_mahanghoa, target_column=config.TARGET_MAHANGHOA,
-                preprocessor_creator=create_mahanghoa_preprocessor,
-                preprocessor_filename=preprocessor_mahanghoa_file,
-                model_object=model_mh_instance,
-                model_save_filename=mahanghoa_model_save_file,
-                encoder_filename=mahanghoa_encoder_file,
-                outlier_detector_filename=outlier_detector_2_file
-            )
-            # Lưu metadata MaHangHoa (Giữ nguyên logic)
-            metadata["mahanghoa_model_info"]["preprocessor_saved"] = prep_mh is not None
-            # ... (lưu các thông tin khác) ...
-            metadata["mahanghoa_model_info"]["evaluation_metrics"] = metrics_mh
-            # ... (xử lý warning nếu model_mh is None) ...
+        prep_mh, model_mh, enc_mh, metrics_mh = train_single_model(
+            client_id=client_id,
+            df=df_mahanghoa,
+            target_column=config.TARGET_MAHANGHOA,
+            preprocessor_creator=create_mahanghoa_preprocessor,
+            preprocessor_filename=preprocessor_mahanghoa_file,
+            model_object=model_mh_instance,
+            model_save_filename=mahanghoa_model_save_file,
+            encoder_filename=mahanghoa_encoder_file,
+            outlier_detector_filename=outlier_detector_2_file
+        )
+
+        metadata["mahanghoa_model_info"]["preprocessor_saved"] = prep_mh is not None
+        metadata["mahanghoa_model_info"]["model_saved"] = model_mh is not None
+        metadata["mahanghoa_model_info"]["encoder_saved"] = enc_mh is not None
+        metadata["mahanghoa_model_info"]["evaluation_metrics"] = metrics_mh
     else:
-        # Trường hợp không có dữ liệu để huấn luyện MH (do thiếu cột hoặc sau khi lọc/dropna)
-        logger.warning(f"Không có dữ liệu hợp lệ để huấn luyện MaHangHoa.")
-        if config.TARGET_MAHANGHOA in df.columns:  # Chỉ đánh dấu attempted nếu cột MH tồn tại ban đầu
-            metadata["mahanghoa_model_info"]["attempted"] = True
-        metadata["mahanghoa_model_info"]["message"] = "No suitable data found for training MaHangHoa."
-        # Xóa file cũ của MaHangHoa (Giữ nguyên logic)
-        if (models_path / mahanghoa_model_save_file).exists(): (models_path / mahanghoa_model_save_file).unlink()
-        if (models_path / preprocessor_mahanghoa_file).exists(): (models_path / preprocessor_mahanghoa_file).unlink()
-        # ... (xóa encoder, outlier) ...
+        logger.warning(f"No suitable data found for MaHangHoa training (model: {model_name})")
+        metadata["mahanghoa_model_info"]["message"] = "No suitable data for training MaHangHoa"
 
-
-    # --- Hoàn tất và Lưu Metadata ---
+    # --- Save metadata with model_name ---
     end_time = time.time()
     metadata["training_duration_seconds"] = round(end_time - start_time, 2)
     metadata["status"] = "COMPLETED"
 
-    meta_filename = f"{config.METADATA_FILENAME_PREFIX}{training_timestamp_utc.strftime('%Y%m%d_%H%M%S')}.json"
+    timestamp_str = training_timestamp_utc.strftime('%Y%m%d_%H%M%S')
+    meta_filename = config.get_metadata_filename(model_name, timestamp_str)
+
     try:
         serializable_metadata = make_json_serializable(metadata)
         with open(models_path / meta_filename, 'w', encoding='utf-8') as f:
             json.dump(serializable_metadata, f, ensure_ascii=False, indent=4)
-        logger.info(f"Đã lưu metadata huấn luyện vào {meta_filename}")
-    except Exception as json_e:
-        logger.error(f"Lỗi khi lưu metadata huấn luyện: {json_e}")
+        logger.info(f"Saved training metadata: {meta_filename}")
+    except Exception as e:
+        logger.error(f"Failed to save metadata: {e}")
 
-    logger.info(f"===== Quy trình huấn luyện cho client {client_id} đã hoàn tất ({metadata['training_duration_seconds']:.2f}s). =====")
-    return (models_path / preprocessor_hachtoan_file).exists() and \
-           (get_client_label_encoder_path(client_id) / hachtoan_encoder_file).exists()
+    logger.info(
+        f"===== Training completed for model '{model_name}' of client {client_id} ({metadata['training_duration_seconds']:.2f}s) =====")
+    return True
 
 
 # --- Prediction Logic (Refactored) ---

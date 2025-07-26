@@ -92,3 +92,43 @@ VALIDATION_SET_SIZE = float(os.getenv("VALIDATION_SET_SIZE", 0.2)) # Thêm cấu
 API_TITLE = "HachToan & MaHangHoa Prediction API"
 API_DESCRIPTION = "API for training and predicting HachToan and MaHangHoa using ML."
 API_VERSION = "0.1.0"
+
+# --- Model Names ---
+VALID_MODEL_NAMES = ["IN", "OUT"]  # Chỉ cho phép 2 loại model
+
+# --- Updated Filenames với model name support ---
+def get_hachtoan_model_filename(model_name: str) -> str:
+    """Tạo tên file cho HachToan model."""
+    return f"hachtoan_model_{model_name}.joblib"
+
+def get_mahanghoa_model_filename(model_name: str) -> str:
+    """Tạo tên file cho MaHangHoa model."""
+    return f"mahanghoa_model_{model_name}.joblib"
+
+def get_preprocessor_hachtoan_filename(model_name: str) -> str:
+    """Tạo tên file cho HachToan preprocessor."""
+    return f"preprocessor_hachtoan_{model_name}.joblib"
+
+def get_preprocessor_mahanghoa_filename(model_name: str) -> str:
+    """Tạo tên file cho MaHangHoa preprocessor."""
+    return f"preprocessor_mahanghoa_{model_name}.joblib"
+
+def get_hachtoan_encoder_filename(model_name: str) -> str:
+    """Tạo tên file cho HachToan encoder."""
+    return f"hachtoan_encoder_{model_name}.joblib"
+
+def get_mahanghoa_encoder_filename(model_name: str) -> str:
+    """Tạo tên file cho MaHangHoa encoder."""
+    return f"mahanghoa_encoder_{model_name}.joblib"
+
+def get_outlier_detector_1_filename(model_name: str) -> str:
+    """Tạo tên file cho outlier detector 1."""
+    return f"outlier_detector_1_{model_name}.joblib"
+
+def get_outlier_detector_2_filename(model_name: str) -> str:
+    """Tạo tên file cho outlier detector 2."""
+    return f"outlier_detector_2_{model_name}.joblib"
+
+def get_metadata_filename(model_name: str, timestamp_str: str) -> str:
+    """Tạo tên file cho metadata."""
+    return f"metadata_{model_name}_{timestamp_str}.json"
