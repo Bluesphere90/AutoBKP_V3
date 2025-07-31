@@ -47,6 +47,50 @@ logger = logging.getLogger(__name__)
 
 # --- Helper Functions
 
+def _filter_data_by_model_type(df: pd.DataFrame, model_name: str) -> pd.DataFrame:
+    """
+    Lọc dữ liệu theo model type (IN/OUT) dựa trên ký tự đầu của HachToan.
+
+    Args:
+        df: DataFrame chứa dữ liệu training
+        model_name: "IN" hoặc "OUT"
+
+    Returns:
+        DataFrame đã được lọc
+    """
+    if config.TARGET_HACHTOAN not in df.columns:
+        logger.warning(f"Cột {config.TARGET_HACHTOAN} không tồn tại trong DataFrame")
+        return df
+
+    # Đảm bảo HachToan là string và loại bỏ NaN
+    df_filtered = df.copy()
+    df_filtered = df_filtered.dropna(subset=[config.TARGET_HACHTOAN])
+    df_filtered[config.TARGET_HACHTOAN] = df_filtered[config.TARGET_HACHTOAN].astype(str)
+
+    original_count = len(df_filtered)
+
+    if model_name == "IN":
+        # Model IN: Loại bỏ các bản ghi bắt đầu bằng '5' hoặc '7'
+        df_filtered = df_filtered[
+            ~df_filtered[config.TARGET_HACHTOAN].str.startswith(('5', '7'))
+        ]
+        logger.info(f"Model IN: Loại bỏ records có HachToan bắt đầu bằng '5' hoặc '7'. "
+                    f"From {original_count} to {len(df_filtered)} records")
+
+    elif model_name == "OUT":
+        # Model OUT: Chỉ giữ lại các bản ghi bắt đầu bằng '5' hoặc '7'
+        df_filtered = df_filtered[
+            df_filtered[config.TARGET_HACHTOAN].str.startswith(('5', '7'))
+        ]
+        logger.info(f"Model OUT: Chỉ giữ records có HachToan bắt đầu bằng '5' hoặc '7'. "
+                    f"From {original_count} to {len(df_filtered)} records")
+    else:
+        logger.warning(f"Unknown model_name: {model_name}. No filtering applied.")
+
+    if len(df_filtered) == 0:
+        logger.error(f"Không còn dữ liệu nào sau khi lọc cho model {model_name}!")
+
+    return df_filtered
 def _find_available_model(client_id: str) -> Optional[str]:
     """Tìm model_name có sẵn cho client (IN hoặc OUT)"""
     models_path = get_client_models_path(client_id)
@@ -379,7 +423,7 @@ def train_client_models(
         initial_model_type_str: Optional[str] = None
 ) -> bool:
     """
-    Enhanced train_client_models với model_name support.
+    Enhanced train_client_models với model_name support và data filtering.
 
     Args:
         client_id: ID của client
@@ -443,19 +487,43 @@ def train_client_models(
     # --- Load data from database ---
     from app.ml.database import load_all_training_data
 
-    df = load_all_training_data(client_id)
-    if df is None or df.empty:
+    df_raw = load_all_training_data(client_id)
+    if df_raw is None or df_raw.empty:
         error_msg = f"No training data found in database for client {client_id}"
         logger.error(error_msg)
         metadata["status"] = "FAILED"
         metadata["error_message"] = error_msg
         return False
 
-    metadata["data_info"]["total_samples_loaded"] = len(df)
-    metadata["data_info"]["columns_present"] = df.columns.tolist()
-    logger.info(f"Loaded {len(df)} records from database for client {client_id}")
+    # *** THÊM BƯỚC LỌCC DỮ LIỆU THEO MODEL TYPE ***
+    logger.info(f"Raw data loaded: {len(df_raw)} records")
+    df = _filter_data_by_model_type(df_raw, model_name)
 
-    # --- Create model instances ---
+    if df.empty:
+        error_msg = f"No data remaining after filtering for model {model_name}"
+        logger.error(error_msg)
+        metadata["status"] = "FAILED"
+        metadata["error_message"] = error_msg
+        metadata["data_info"]["raw_samples_loaded"] = len(df_raw)
+        metadata["data_info"]["filtered_samples"] = len(df)
+        metadata["data_info"]["filter_rule"] = f"Model {model_name}: " + (
+            "Exclude HachToan starting with '5' or '7'" if model_name == "IN"
+            else "Only HachToan starting with '5' or '7'"
+        )
+        return False
+
+    metadata["data_info"]["raw_samples_loaded"] = len(df_raw)
+    metadata["data_info"]["filtered_samples"] = len(df)
+    metadata["data_info"]["columns_present"] = df.columns.tolist()
+    metadata["data_info"]["filter_rule"] = f"Model {model_name}: " + (
+        "Exclude HachToan starting with '5' or '7'" if model_name == "IN"
+        else "Only HachToan starting with '5' or '7'"
+    )
+
+    logger.info(f"After filtering for model '{model_name}': {len(df)} records")
+
+    # --- Tiếp tục với logic training như cũ ---
+    # Create model instances
     model_ht_instance = _instantiate_model(model_type_to_train)
     model_mh_instance = _instantiate_model(model_type_to_train)
 
@@ -480,7 +548,7 @@ def train_client_models(
     logger.info(f"--- Training {model_type_to_train} for HachToan (model: {model_name}) ---")
     prep_ht, model_ht, enc_ht, metrics_ht = train_single_model(
         client_id=client_id,
-        df=df,
+        df=df,  # Sử dụng df đã được lọc
         target_column=config.TARGET_HACHTOAN,
         preprocessor_creator=create_hachtoan_preprocessor,
         preprocessor_filename=preprocessor_hachtoan_file,
@@ -506,11 +574,11 @@ def train_client_models(
         metadata["error_message"] = error_msg
         return False
 
-    # --- Train MaHangHoa model (similar logic as before) ---
+    # --- Train MaHangHoa model ---
     logger.info(f"--- Training {model_type_to_train} for MaHangHoa (model: {model_name}) ---")
     metadata["mahanghoa_model_info"]["attempted"] = False
 
-    # Filter data for MaHangHoa
+    # Filter data for MaHangHoa (sử dụng df đã được lọc theo model type)
     if config.TARGET_MAHANGHOA in df.columns:
         df_filtered_prefix = df[
             df[config.TARGET_HACHTOAN].astype(str).str.startswith(tuple(config.HACHTOAN_PREFIX_FOR_MAHANGHOA))
@@ -525,6 +593,7 @@ def train_client_models(
         df_mahanghoa = pd.DataFrame()
 
     metadata["data_info"]["samples_for_mahanghoa"] = len(df_mahanghoa)
+    logger.info(f"Data for MaHangHoa training after all filtering: {len(df_mahanghoa)} records")
 
     if not df_mahanghoa.empty:
         metadata["mahanghoa_model_info"]["attempted"] = True
@@ -545,8 +614,8 @@ def train_client_models(
         metadata["mahanghoa_model_info"]["encoder_saved"] = enc_mh is not None
         metadata["mahanghoa_model_info"]["evaluation_metrics"] = metrics_mh
     else:
-        logger.warning(f"No suitable data found for MaHangHoa training (model: {model_name})")
-        metadata["mahanghoa_model_info"]["message"] = "No suitable data for training MaHangHoa"
+        logger.warning(f"No suitable data found for MaHangHoa training after filtering (model: {model_name})")
+        metadata["mahanghoa_model_info"]["message"] = "No suitable data for training MaHangHoa after filtering"
 
     # --- Save metadata with model_name ---
     end_time = time.time()

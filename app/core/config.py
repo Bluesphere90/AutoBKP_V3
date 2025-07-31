@@ -132,3 +132,14 @@ def get_outlier_detector_2_filename(model_name: str) -> str:
 def get_metadata_filename(model_name: str, timestamp_str: str) -> str:
     """Tạo tên file cho metadata."""
     return f"metadata_{model_name}_{timestamp_str}.json"
+
+HACHTOAN_FILTER_RULES = {
+    "IN": {
+        "description": "Exclude HachToan starting with '5' or '7'",
+        "exclude_prefixes": ['5', '7']
+    },
+    "OUT": {
+        "description": "Only HachToan starting with '5' or '7'",
+        "include_prefixes": ['5', '7']
+    }
+}
