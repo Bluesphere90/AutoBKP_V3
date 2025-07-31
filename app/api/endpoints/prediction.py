@@ -13,6 +13,7 @@ from app.ml.models import predict_combined, predict_hachtoan_only, predict_mahan
 from app.ml.data_handler import prepare_prediction_data
 from app.ml.utils import get_client_models_path
 
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -48,6 +49,27 @@ async def check_mahanghoa_model(
         )
     logger.debug(f"Client {client_id}: Đã tìm thấy thành phần model MaHangHoa.")
 
+
+async def check_model_exists(
+        client_id: str = FastApiPath(..., description="ID của khách hàng", example="client_abc"),
+        model_name: str = FastApiPath(..., description="Model name: IN or OUT", example="IN")
+):
+    """Kiểm tra model có tồn tại không."""
+    models_path = get_client_models_path(client_id)
+
+    # Check for required files với model_name
+    required_ht_preprocessor = models_path / f"preprocessor_hachtoan_{model_name}.joblib"
+    required_ht_model = models_path / f"hachtoan_model_{model_name}.joblib"
+    required_ht_encoder = models_path / "label_encoders" / f"hachtoan_encoder_{model_name}.joblib"
+
+    if not all([required_ht_preprocessor.exists(), required_ht_model.exists(), required_ht_encoder.exists()]):
+        logger.warning(f"Client {client_id}, Model {model_name}: Missing required HachToan model files.")
+        raise HTTPException(
+            status_code=404,
+            detail=f"Model '{model_name}' not found for client '{client_id}'. Please train the model first."
+        )
+
+    logger.debug(f"Client {client_id}, Model {model_name}: Model files verified.")
 
 # --- API Endpoints ---
 
@@ -212,3 +234,71 @@ async def predict_mahanghoa_endpoint(
 
     logger.info(f"Client {client_id}: Dự đoán chỉ MaHangHoa hoàn tất.")
     return schemas.MaHangHoaPredictionResponse(results=response_items)
+
+
+# Endpoint prediction mới với model_name support
+@router.post(
+    "/{client_id}/{model_name}",
+    response_model=schemas.PredictionResponse,
+    summary="Predict với model name support",
+    description="Dự đoán HachToan và MaHangHoa với model cụ thể (IN/OUT).",
+    dependencies=[Depends(check_model_exists)],
+    tags=["Prediction"],
+    responses={
+        404: {"model": schemas.ErrorResponse, "description": "Model không tồn tại cho client"},
+        422: {"model": schemas.ErrorResponse, "description": "Lỗi validation dữ liệu input"},
+        500: {"model": schemas.ErrorResponse, "description": "Lỗi server trong quá trình dự đoán"},
+    }
+)
+async def predict_with_model_name(
+        client_id: str = FastApiPath(..., description="ID của khách hàng", example="client_abc"),
+        model_name: str = FastApiPath(..., description="Model name: IN or OUT", example="IN"),
+        request_body: schemas.PredictionRequest = Body(...)
+) -> schemas.PredictionResponse:
+    """Endpoint dự đoán với model name support."""
+
+    # Validate model_name
+    if model_name not in config.VALID_MODEL_NAMES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid model_name '{model_name}'. Must be one of: {config.VALID_MODEL_NAMES}"
+        )
+
+    logger.info(f"Client {client_id}, Model {model_name}: Prediction request for {len(request_body.items)} records.")
+
+    try:
+        input_list_of_dicts = [item.to_flat_dict() for item in request_body.items]
+        input_df = prepare_prediction_data(input_list_of_dicts)
+    except Exception as e:
+        logger.error(f"Client {client_id}, Model {model_name}: Error preparing data: {e}", exc_info=True)
+        raise HTTPException(status_code=400, detail=f"Error processing input data: {e}")
+
+    if input_df.empty and request_body.items:
+        logger.warning(f"Client {client_id}, Model {model_name}: DataFrame empty after data preparation.")
+        raise HTTPException(status_code=400, detail="Input data is invalid or empty.")
+
+    try:
+        # Call predict_combined với model name support
+        prediction_results: List[dict] = predict_combined(client_id, input_df)
+
+        if len(prediction_results) != len(request_body.items):
+            logger.error(f"Client {client_id}, Model {model_name}: Result count mismatch.")
+            raise HTTPException(status_code=500, detail="Internal error: Prediction result count mismatch.")
+
+        response_items = [schemas.PredictionResultItem(**result) for result in prediction_results]
+
+    except HTTPException as http_exc:
+        raise http_exc
+    except Exception as e:
+        logger.error(f"Client {client_id}, Model {model_name}: Error during prediction: {e}", exc_info=True)
+        error_items = [
+            schemas.PredictionResultItem(
+                is_outlier_input1=False,
+                is_outlier_input2=False,
+                error=f"Prediction error: {e}"
+            ) for _ in range(len(request_body.items))
+        ]
+        return schemas.PredictionResponse(results=error_items)
+
+    logger.info(f"Client {client_id}, Model {model_name}: Prediction completed successfully.")
+    return schemas.PredictionResponse(results=response_items)
