@@ -9,12 +9,13 @@ from fastapi import APIRouter, HTTPException, Path as FastApiPath
 
 # --- Project Imports ---
 from app.api import schemas
-from app.ml.utils import get_client_models_path
+from app.ml.utils import get_client_models_path, load_joblib
 import app.core.config as config
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
 
 
 def _get_latest_metadata_file(client_models_path: Path) -> Optional[Path]:

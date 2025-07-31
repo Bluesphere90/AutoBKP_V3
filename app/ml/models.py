@@ -45,7 +45,81 @@ from app.ml.outlier_detector import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- Helper Functions (make_json_serializable, _fit/load_label_encoder - Giữ nguyên) ---
+# --- Helper Functions
+
+def _find_available_model(client_id: str) -> Optional[str]:
+    """Tìm model_name có sẵn cho client (IN hoặc OUT)"""
+    models_path = get_client_models_path(client_id)
+
+    for model_name in config.VALID_MODEL_NAMES:  # ["IN", "OUT"]
+        # Kiểm tra file chính cần thiết
+        hachtoan_model_file = config.get_hachtoan_model_filename(model_name)
+        preprocessor_file = config.get_preprocessor_hachtoan_filename(model_name)
+        encoder_file = config.get_hachtoan_encoder_filename(model_name)
+
+        if all([
+            (models_path / hachtoan_model_file).exists(),
+            (models_path / preprocessor_file).exists(),
+            (models_path / "label_encoders" / encoder_file).exists()
+        ]):
+            logger.info(f"Found available model '{model_name}' for client {client_id}")
+            return model_name
+
+    # Fallback: kiểm tra format cũ
+    old_files = [
+        models_path / "hachtoan_model.joblib",
+        models_path / "preprocessor_hachtoan.joblib",
+        models_path / "label_encoders" / "hachtoan_encoder.joblib"
+    ]
+
+    if all(f.exists() for f in old_files):
+        logger.info(f"Found legacy model format for client {client_id}")
+        return "legacy"
+
+    logger.error(f"No trained models found for client {client_id}")
+    return None
+
+
+def _load_model_components(client_id: str, model_name: str, target: str = "hachtoan"):
+    """
+    Load model components với model_name hoặc legacy format
+    target: "hachtoan" hoặc "mahanghoa"
+    """
+    models_path = get_client_models_path(client_id)
+
+    if model_name == "legacy":
+        # Load old format
+        if target == "hachtoan":
+            preprocessor_file = "preprocessor_hachtoan.joblib"
+            model_file = "hachtoan_model.joblib"
+            encoder_file = "hachtoan_encoder.joblib"
+            outlier_file = "outlier_detector_1.joblib"
+        else:  # mahanghoa
+            preprocessor_file = "preprocessor_mahanghoa.joblib"
+            model_file = "mahanghoa_model.joblib"
+            encoder_file = "mahanghoa_encoder.joblib"
+            outlier_file = "outlier_detector_2.joblib"
+    else:
+        # Load new format với model_name
+        if target == "hachtoan":
+            preprocessor_file = config.get_preprocessor_hachtoan_filename(model_name)
+            model_file = config.get_hachtoan_model_filename(model_name)
+            encoder_file = config.get_hachtoan_encoder_filename(model_name)
+            outlier_file = config.get_outlier_detector_1_filename(model_name)
+        else:  # mahanghoa
+            preprocessor_file = config.get_preprocessor_mahanghoa_filename(model_name)
+            model_file = config.get_mahanghoa_model_filename(model_name)
+            encoder_file = config.get_mahanghoa_encoder_filename(model_name)
+            outlier_file = config.get_outlier_detector_2_filename(model_name)
+
+    # Load components
+    preprocessor = load_joblib(models_path / preprocessor_file)
+    model = load_joblib(models_path / model_file)
+    encoder = _load_label_encoder(client_id, encoder_file)
+    outlier_detector = load_outlier_detector(client_id, outlier_file)
+
+    return preprocessor, model, encoder, outlier_detector
+
 def _find_latest_metadata_for_model(models_path: Path, model_name: str) -> Optional[Path]:
     """Tìm file metadata mới nhất cho một model_name cụ thể."""
     metadata_pattern = f"{config.METADATA_FILENAME_PREFIX}{model_name}_*.json"
@@ -498,13 +572,14 @@ def train_client_models(
 # --- Prediction Logic (Refactored) ---
 def _predict_hachtoan_batch(
     client_id: str,
+    model_name: str,  # THÊM PARAMETER MỚI
     input_df: pd.DataFrame,
     preprocessor_ht: Optional[ColumnTransformer],
     model_ht: Optional[Any],
     encoder_ht: Optional[LabelEncoder],
     outlier_detector_1: Optional[Any]
 ) -> List[Dict[str, Any]]:
-    """Dự đoán chỉ HachToan cho một batch DataFrame."""
+    """Dự đoán chỉ HachToan cho một batch DataFrame với model_name support."""
     results = []
     n_items = len(input_df)
     y_pred_ht = [None] * n_items
@@ -513,8 +588,9 @@ def _predict_hachtoan_batch(
     errors = [None] * n_items
 
     if not preprocessor_ht or not encoder_ht:
-        logger.error(f"Client {client_id}: Thiếu preprocessor hoặc encoder HachToan.")
-        for i in range(n_items): results.append({"error": "Thiếu thành phần model HachToan."})
+        logger.error(f"Client {client_id}, Model {model_name}: Thiếu preprocessor hoặc encoder HachToan.")
+        for i in range(n_items):
+            results.append({"error": f"Thiếu thành phần model HachToan cho model {model_name}."})
         return results
 
     can_check_outlier_1 = bool(preprocessor_ht and outlier_detector_1)
@@ -536,11 +612,11 @@ def _predict_hachtoan_batch(
             y_pred_ht = [encoder_ht.classes_[0]] * n_items
             probabilities_ht = [1.0] * n_items
         else:
-            errors = ["Lỗi dự đoán HT: Model không tồn tại"] * n_items
+            errors = [f"Lỗi dự đoán HT: Model {model_name} không tồn tại"] * n_items
 
     except Exception as e:
-        logger.error(f"Client {client_id}: Lỗi khi dự đoán HachToan batch: {e}", exc_info=True)
-        errors = [f"Lỗi dự đoán HachToan: {e}"] * n_items
+        logger.error(f"Client {client_id}, Model {model_name}: Lỗi khi dự đoán HachToan batch: {e}", exc_info=True)
+        errors = [f"Lỗi dự đoán HachToan model {model_name}: {e}"] * n_items
 
     for i in range(n_items):
         prob = probabilities_ht[i]
@@ -556,13 +632,14 @@ def _predict_hachtoan_batch(
 
 def _predict_mahanghoa_batch(
     client_id: str,
+    model_name: str,  # THÊM PARAMETER MỚI
     input_df_mh: pd.DataFrame,
     preprocessor_mh: Optional[ColumnTransformer],
     model_mh: Optional[Any],
     encoder_mh: Optional[LabelEncoder],
     outlier_detector_2: Optional[Any]
 ) -> List[Dict[str, Any]]:
-    """Dự đoán chỉ MaHangHoa cho một batch DataFrame (đã có HachToan input)."""
+    """Dự đoán chỉ MaHangHoa cho một batch DataFrame với model_name support."""
     results = []
     n_items = len(input_df_mh)
     y_pred_mh = [None] * n_items
@@ -571,15 +648,17 @@ def _predict_mahanghoa_batch(
     errors = [None] * n_items
 
     if not preprocessor_mh or not encoder_mh:
-        logger.error(f"Client {client_id}: Thiếu preprocessor hoặc encoder MaHangHoa.")
-        for i in range(n_items): results.append({"error": "Thiếu thành phần model MaHangHoa."})
+        logger.error(f"Client {client_id}, Model {model_name}: Thiếu preprocessor hoặc encoder MaHangHoa.")
+        for i in range(n_items):
+            results.append({"error": f"Thiếu thành phần model MaHangHoa cho model {model_name}."})
         return results
 
     can_check_outlier_2 = bool(preprocessor_mh and outlier_detector_2)
 
     if config.TARGET_HACHTOAN not in input_df_mh.columns:
-         logger.error(f"Client {client_id}: Input cho dự đoán MaHangHoa thiếu cột '{config.TARGET_HACHTOAN}'.")
-         for i in range(n_items): results.append({"error": f"Thiếu input {config.TARGET_HACHTOAN}."})
+         logger.error(f"Client {client_id}, Model {model_name}: Input cho dự đoán MaHangHoa thiếu cột '{config.TARGET_HACHTOAN}'.")
+         for i in range(n_items):
+             results.append({"error": f"Thiếu input {config.TARGET_HACHTOAN} cho model {model_name}."})
          return results
 
     try:
@@ -599,11 +678,11 @@ def _predict_mahanghoa_batch(
             y_pred_mh = [encoder_mh.classes_[0]] * n_items
             probabilities_mh = [1.0] * n_items
         else:
-            errors = ["Lỗi dự đoán MH: Model không tồn tại"] * n_items
+            errors = [f"Lỗi dự đoán MH: Model {model_name} không tồn tại"] * n_items
 
     except Exception as e:
-        logger.error(f"Client {client_id}: Lỗi khi dự đoán MaHangHoa batch: {e}", exc_info=True)
-        errors = [f"Lỗi dự đoán MaHangHoa: {e}"] * n_items
+        logger.error(f"Client {client_id}, Model {model_name}: Lỗi khi dự đoán MaHangHoa batch: {e}", exc_info=True)
+        errors = [f"Lỗi dự đoán MaHangHoa model {model_name}: {e}"] * n_items
 
     for i in range(n_items):
         prob = probabilities_mh[i]
@@ -617,23 +696,45 @@ def _predict_mahanghoa_batch(
     return results
 
 
-def predict_combined(client_id: str, input_data: pd.DataFrame) -> List[Dict[str, Any]]:
+def predict_combined(
+        tax_code: str,  # PARAMETER 1: Mã số thuế
+        model_type: str,  # PARAMETER 2: IN hoặc OUT
+        input_data: pd.DataFrame  # PARAMETER 3: Dữ liệu input
+) -> List[Dict[str, Any]]:
     """Thực hiện dự đoán kết hợp HachToan -> MaHangHoa."""
-    logger.info(f"Bắt đầu dự đoán kết hợp cho client {client_id} với {len(input_data)} bản ghi.")
-    models_path = get_client_models_path(client_id)
+    logger.info(f"Bắt đầu dự đoán kết hợp cho tax code {tax_code}, model {model_type} với {len(input_data)} bản ghi.")
 
-    preprocessor_ht = load_joblib(models_path / "preprocessor_hachtoan.joblib")
-    model_ht = load_joblib(models_path / config.HACHTOAN_MODEL_FILENAME)
-    encoder_ht = _load_label_encoder(client_id, config.HACHTOAN_ENCODER_FILENAME)
-    outlier_detector_1 = load_outlier_detector(client_id, config.OUTLIER_DETECTOR_1_FILENAME)
+    # Validate model_type
+    if model_type not in config.VALID_MODEL_NAMES:
+        raise ValueError(f"Invalid model_type '{model_type}'. Must be one of {config.VALID_MODEL_NAMES}")
 
-    preprocessor_mh = load_joblib(models_path / "preprocessor_mahanghoa.joblib")
-    model_mh = load_joblib(models_path / config.MAHANGHOA_MODEL_FILENAME)
-    encoder_mh = _load_label_encoder(client_id, config.MAHANGHOA_ENCODER_FILENAME)
-    outlier_detector_2 = load_outlier_detector(client_id, config.OUTLIER_DETECTOR_2_FILENAME)
+    models_path = get_client_models_path(tax_code)
 
+    # Load HachToan components với model_type
+    preprocessor_ht_file = config.get_preprocessor_hachtoan_filename(model_type)
+    hachtoan_model_file = config.get_hachtoan_model_filename(model_type)
+    hachtoan_encoder_file = config.get_hachtoan_encoder_filename(model_type)
+    outlier_detector_1_file = config.get_outlier_detector_1_filename(model_type)
+
+    preprocessor_ht = load_joblib(models_path / preprocessor_ht_file)
+    model_ht = load_joblib(models_path / hachtoan_model_file)
+    encoder_ht = _load_label_encoder(tax_code, hachtoan_encoder_file)
+    outlier_detector_1 = load_outlier_detector(tax_code, outlier_detector_1_file)
+
+    # Load MaHangHoa components với model_type
+    preprocessor_mh_file = config.get_preprocessor_mahanghoa_filename(model_type)
+    mahanghoa_model_file = config.get_mahanghoa_model_filename(model_type)
+    mahanghoa_encoder_file = config.get_mahanghoa_encoder_filename(model_type)
+    outlier_detector_2_file = config.get_outlier_detector_2_filename(model_type)
+
+    preprocessor_mh = load_joblib(models_path / preprocessor_mh_file)
+    model_mh = load_joblib(models_path / mahanghoa_model_file)
+    encoder_mh = _load_label_encoder(tax_code, mahanghoa_encoder_file)
+    outlier_detector_2 = load_outlier_detector(tax_code, outlier_detector_2_file)
+
+    # Predict HachToan first với updated signature
     results_ht = _predict_hachtoan_batch(
-        client_id, input_data, preprocessor_ht, model_ht, encoder_ht, outlier_detector_1
+        tax_code, model_type, input_data, preprocessor_ht, model_ht, encoder_ht, outlier_detector_1
     )
 
     final_results = []
@@ -652,40 +753,39 @@ def predict_combined(client_id: str, input_data: pd.DataFrame) -> List[Dict[str,
             "error": res_ht.get("error")
         }
 
+        # Check if should predict MaHangHoa
         if (hachtoan_pred is not None and
-            isinstance(hachtoan_pred, str) and
-            hachtoan_pred.startswith(tuple(config.HACHTOAN_PREFIX_FOR_MAHANGHOA)) and
-            preprocessor_mh and encoder_mh): # Cần prep và enc MH để xử lý MH
+                isinstance(hachtoan_pred, str) and
+                hachtoan_pred.startswith(tuple(config.HACHTOAN_PREFIX_FOR_MAHANGHOA)) and
+                preprocessor_mh and encoder_mh):
 
             indices_to_predict_mh.append(i)
             try:
-                # Cẩn thận khi dùng iloc và to_dict, đảm bảo cột tồn tại
                 input_dict = input_data.iloc[i].to_dict()
                 input_dict[config.TARGET_HACHTOAN] = hachtoan_pred
                 input_list_mh.append(input_dict)
             except IndexError:
-                 logger.error(f"IndexError khi truy cập input_data.iloc[{i}]")
-                 # Ghi lỗi vào kết quả hiện tại
-                 current_result["error"] = (current_result["error"] or "") + "; Lỗi lấy dữ liệu gốc cho MH"
-
+                logger.error(f"IndexError khi truy cập input_data.iloc[{i}]")
+                current_result["error"] = (current_result["error"] or "") + "; Lỗi lấy dữ liệu gốc cho MH"
 
         final_results.append(current_result)
 
-
-    if indices_to_predict_mh and input_list_mh: # Kiểm tra input_list_mh không rỗng
-        logger.info(f"Client {client_id}: Dự đoán MaHangHoa cho {len(indices_to_predict_mh)} bản ghi.")
+    # Predict MaHangHoa if needed
+    if indices_to_predict_mh and input_list_mh:
+        logger.info(
+            f"Tax code {tax_code}, Model {model_type}: Dự đoán MaHangHoa cho {len(indices_to_predict_mh)} bản ghi.")
         try:
             input_df_mh = pd.DataFrame(input_list_mh)
             results_mh = _predict_mahanghoa_batch(
-                client_id, input_df_mh, preprocessor_mh, model_mh, encoder_mh, outlier_detector_2
+                tax_code, model_type, input_df_mh, preprocessor_mh, model_mh, encoder_mh, outlier_detector_2
             )
 
             for idx, original_index in enumerate(indices_to_predict_mh):
-                # Đảm bảo idx hợp lệ cho results_mh
                 if idx < len(results_mh):
                     res_mh = results_mh[idx]
                     final_results[original_index][config.TARGET_MAHANGHOA] = res_mh.get(config.TARGET_MAHANGHOA)
-                    final_results[original_index][f"{config.TARGET_MAHANGHOA}_prob"] = res_mh.get(f"{config.TARGET_MAHANGHOA}_prob")
+                    final_results[original_index][f"{config.TARGET_MAHANGHOA}_prob"] = res_mh.get(
+                        f"{config.TARGET_MAHANGHOA}_prob")
                     final_results[original_index]["is_outlier_input2"] = res_mh.get("is_outlier_input2", False)
                     if res_mh.get("error"):
                         if final_results[original_index]["error"]:
@@ -693,44 +793,76 @@ def predict_combined(client_id: str, input_data: pd.DataFrame) -> List[Dict[str,
                         else:
                             final_results[original_index]["error"] = f"Lỗi MH: {res_mh['error']}"
                 else:
-                    logger.error(f"Index mismatch khi gộp kết quả MaHangHoa: idx={idx}, len(results_mh)={len(results_mh)}")
-                    final_results[original_index]["error"] = (final_results[original_index]["error"] or "") + "; Lỗi nội bộ khi gộp kết quả MH"
+                    logger.error(
+                        f"Index mismatch khi gộp kết quả MaHangHoa: idx={idx}, len(results_mh)={len(results_mh)}")
+                    final_results[original_index]["error"] = (final_results[original_index][
+                                                                  "error"] or "") + "; Lỗi nội bộ khi gộp kết quả MH"
 
         except Exception as e:
-             logger.error(f"Lỗi nghiêm trọng khi xử lý batch MaHangHoa: {e}", exc_info=True)
-             # Ghi lỗi vào tất cả các dòng lẽ ra phải dự đoán MH
-             for original_index in indices_to_predict_mh:
-                 final_results[original_index]["error"] = (final_results[original_index]["error"] or "") + f"; Lỗi batch MH: {e}"
+            logger.error(f"Lỗi nghiêm trọng khi xử lý batch MaHangHoa: {e}", exc_info=True)
+            for original_index in indices_to_predict_mh:
+                final_results[original_index]["error"] = (final_results[original_index][
+                                                              "error"] or "") + f"; Lỗi batch MH: {e}"
 
-
-
-    logger.info(f"Dự đoán kết hợp hoàn tất cho client {client_id}.")
+    logger.info(f"Dự đoán kết hợp hoàn tất cho tax code {tax_code}, model {model_type}.")
     return final_results
 
 
-def predict_hachtoan_only(client_id: str, input_data: pd.DataFrame) -> List[Dict[str, Any]]:
+def predict_hachtoan_only(
+        tax_code: str,  # PARAMETER 1: Mã số thuế
+        model_type: str,  # PARAMETER 2: IN hoặc OUT
+        input_data: pd.DataFrame  # PARAMETER 3: Dữ liệu input
+) -> List[Dict[str, Any]]:
     """Tải model và gọi hàm dự đoán batch chỉ cho HachToan."""
-    logger.info(f"Bắt đầu dự đoán CHỈ HachToan cho client {client_id}.")
-    models_path = get_client_models_path(client_id)
-    preprocessor_ht = load_joblib(models_path / "preprocessor_hachtoan.joblib")
-    model_ht = load_joblib(models_path / config.HACHTOAN_MODEL_FILENAME)
-    encoder_ht = _load_label_encoder(client_id, config.HACHTOAN_ENCODER_FILENAME)
-    outlier_detector_1 = load_outlier_detector(client_id, config.OUTLIER_DETECTOR_1_FILENAME)
+    logger.info(f"Bắt đầu dự đoán CHỈ HachToan cho tax code {tax_code}, model {model_type}.")
+
+    # Validate model_type
+    if model_type not in config.VALID_MODEL_NAMES:
+        raise ValueError(f"Invalid model_type '{model_type}'. Must be one of {config.VALID_MODEL_NAMES}")
+
+    models_path = get_client_models_path(tax_code)
+
+    # Load với model_type pattern
+    preprocessor_ht_file = config.get_preprocessor_hachtoan_filename(model_type)
+    hachtoan_model_file = config.get_hachtoan_model_filename(model_type)
+    hachtoan_encoder_file = config.get_hachtoan_encoder_filename(model_type)
+    outlier_detector_1_file = config.get_outlier_detector_1_filename(model_type)
+
+    preprocessor_ht = load_joblib(models_path / preprocessor_ht_file)
+    model_ht = load_joblib(models_path / hachtoan_model_file)
+    encoder_ht = _load_label_encoder(tax_code, hachtoan_encoder_file)
+    outlier_detector_1 = load_outlier_detector(tax_code, outlier_detector_1_file)
 
     return _predict_hachtoan_batch(
-        client_id, input_data, preprocessor_ht, model_ht, encoder_ht, outlier_detector_1
+        tax_code, model_type, input_data, preprocessor_ht, model_ht, encoder_ht, outlier_detector_1
     )
 
 
-def predict_mahanghoa_only(client_id: str, input_data_with_hachtoan: pd.DataFrame) -> List[Dict[str, Any]]:
+def predict_mahanghoa_only(
+        tax_code: str,  # PARAMETER 1: Mã số thuế
+        model_type: str,  # PARAMETER 2: IN hoặc OUT
+        input_data_with_hachtoan: pd.DataFrame  # PARAMETER 3: Dữ liệu input (có HachToan)
+) -> List[Dict[str, Any]]:
     """Tải model và gọi hàm dự đoán batch chỉ cho MaHangHoa."""
-    logger.info(f"Bắt đầu dự đoán CHỈ MaHangHoa cho client {client_id}.")
-    models_path = get_client_models_path(client_id)
-    preprocessor_mh = load_joblib(models_path / "preprocessor_mahanghoa.joblib")
-    model_mh = load_joblib(models_path / config.MAHANGHOA_MODEL_FILENAME)
-    encoder_mh = _load_label_encoder(client_id, config.MAHANGHOA_ENCODER_FILENAME)
-    outlier_detector_2 = load_outlier_detector(client_id, config.OUTLIER_DETECTOR_2_FILENAME)
+    logger.info(f"Bắt đầu dự đoán CHỈ MaHangHoa cho tax code {tax_code}, model {model_type}.")
+
+    # Validate model_type
+    if model_type not in config.VALID_MODEL_NAMES:
+        raise ValueError(f"Invalid model_type '{model_type}'. Must be one of {config.VALID_MODEL_NAMES}")
+
+    models_path = get_client_models_path(tax_code)
+
+    # Load với model_type pattern
+    preprocessor_mh_file = config.get_preprocessor_mahanghoa_filename(model_type)
+    mahanghoa_model_file = config.get_mahanghoa_model_filename(model_type)
+    mahanghoa_encoder_file = config.get_mahanghoa_encoder_filename(model_type)
+    outlier_detector_2_file = config.get_outlier_detector_2_filename(model_type)
+
+    preprocessor_mh = load_joblib(models_path / preprocessor_mh_file)
+    model_mh = load_joblib(models_path / mahanghoa_model_file)
+    encoder_mh = _load_label_encoder(tax_code, mahanghoa_encoder_file)
+    outlier_detector_2 = load_outlier_detector(tax_code, outlier_detector_2_file)
 
     return _predict_mahanghoa_batch(
-        client_id, input_data_with_hachtoan, preprocessor_mh, model_mh, encoder_mh, outlier_detector_2
+        tax_code, model_type, input_data_with_hachtoan, preprocessor_mh, model_mh, encoder_mh, outlier_detector_2
     )
