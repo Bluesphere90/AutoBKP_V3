@@ -57,7 +57,7 @@ DEFAULT_MODEL_PARAMS = {
         "n_jobs": -1, "max_depth": None, "min_samples_split": 2, "min_samples_leaf": 1
     },
     SupportedModels.LOGISTIC_REGRESSION: {
-        "multi_class": 'ovr', "solver": 'liblinear', "random_state": 42,
+        "solver": 'lbfgs', "random_state": 42,
         "class_weight": 'balanced', "max_iter": 1000, "C": 1.0
     },
     SupportedModels.MULTINOMIAL_NB: {
